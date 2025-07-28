@@ -1,0 +1,48 @@
+{
+  "name": "aws-sam-websocket-api",
+  "version": "1.0.0",
+  "description": "AWS SAM WebSocket API",
+  "main": "index.js",
+  "author": "reix-m@pm.me",
+  "scripts": {
+    "build": "node_modules/typescript/bin/tsc",
+    "watch": "node_modules/typescript/bin/tsc -w --preserveWatchOutput -p tsconfig.build.json",
+    "format": "prettier --write \"src/**/*.ts\"",
+    "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
+    "test": "jest --passWithNoTests --runInBand",
+    "test:watch": "jest --passWithNoTests --runInBand --watch",
+    "test:cov": "jest --passWithNoTests --runInBand --coverage"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.31.0",
+    "@golevelup/ts-jest": "^0.7.0",
+    "@types/aws-lambda": "^8.10.150",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^24.0.14",
+    "dotenv": "^17.2.0",
+    "eslint": "^9.31.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-prettier": "^5.5.3",
+    "git-commit-msg-linter": "^5.0.8",
+    "globals": "^16.3.0",
+    "jest": "^30.0.4",
+    "lint-staged": "^16.1.2",
+    "nock": "^14.0.6",
+    "prettier": "^3.6.2",
+    "ts-jest": "^29.2.3",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.5.3",
+    "typescript-eslint": "^8.37.0"
+  },
+  "dependencies": {
+    "@aws-sdk/client-apigatewaymanagementapi": "^3.848.0",
+    "@aws-sdk/client-dynamodb": "^3.846.0",
+    "@aws-sdk/lib-dynamodb": "^3.846.0"
+  },
+  "lint-staged": {
+    "*.ts": "eslint --fix"
+  }
+}
