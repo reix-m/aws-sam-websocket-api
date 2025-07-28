@@ -1,0 +1,275 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >-
+  aws-sam-websocket-api
+Transform: AWS::Serverless-2016-10-31
+
+Parameters:
+  WebSocketApiName:
+    Type: String
+    Default: aws-sam-websocket-api
+    Description: The application name used when tagging resources
+  StageName:
+    Type: String
+    Default: qa
+    Description: Deployment stage (e.g. prod, qa)
+
+Globals:
+  Function:
+    Layers:
+      - !Ref RuntimeDependenciesLayer
+    MemorySize: 128
+    Runtime: nodejs20.x
+    Timeout: 100
+    Tracing: Active
+    Environment:
+      Variables:
+        WS_CONNECTIONS_TABLE_NAME: !Ref ConnectionsTable
+        AUTH_VERIFY_TOKEN_URL: 'https://your-auth-url/verify-token'
+        WS_ENDPOINT: !Sub "https://${WebSocket}.execute-api.${AWS::Region}.amazonaws.com/${StageName}"
+
+Resources:
+  ############ WebSocket Resources ############
+
+  WebSocket:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Ref WebSocketApiName
+      ProtocolType: WEBSOCKET
+      RouteSelectionExpression: "$request.body.action"
+
+  Deployment:
+    Type: AWS::ApiGatewayV2::Deployment
+    DependsOn:
+      - ConnectRoute
+      - DisconnectRoute
+      - DefaultRoute
+    Properties:
+      ApiId: !Ref WebSocket
+
+  Stage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref WebSocket
+      StageName: !Ref StageName
+      Description: Version 1 'stage'
+      DeploymentId: !Ref Deployment
+
+  RuntimeDependenciesLayer:
+    Type: AWS::Serverless::LayerVersion
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      Description: Runtime dependencies for Lambdas
+      ContentUri: ./
+      CompatibleRuntimes:
+        - nodejs20.x
+      RetentionPolicy: Retain
+  
+  ConnectionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${WebSocketApiName}-${StageName}-connections"
+      AttributeDefinitions:
+        - AttributeName: connectionId
+          AttributeType: S
+        - AttributeName: connectionType
+          AttributeType: S
+      BillingMode: PAY_PER_REQUEST
+      KeySchema:
+        - AttributeName: connectionId
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: ByConnectionType
+          KeySchema:
+            - AttributeName: connectionType
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  EventDeliverySqs:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${WebSocketApiName}-event-delivery-sqs"
+
+  ############ Connect WS Route ############
+
+  ConnectFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      FunctionName: !Sub "${WebSocketApiName}-${StageName}-connect"
+      Description: Connect to websocket api
+      Handler: dist/functions/connect.handler
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ConnectionsTable
+
+  ConnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebSocket
+      RouteKey: $connect
+      AuthorizationType: NONE
+      OperationName: connect
+      Target: !Join
+        - "/"
+        - - "integrations"
+          - !Ref ConnectIntegration
+
+  ConnectIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      Description: Connect Integration
+      ApiId: !Ref WebSocket
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ConnectFunction.Arn}/invocations
+
+  ConnectFunctionPermission:
+    Type: AWS::Lambda::Permission
+    DependsOn:
+      - WebSocket
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref ConnectFunction
+      Principal: apigateway.amazonaws.com
+
+  ConnectFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${ConnectFunction}"
+      RetentionInDays: 1
+
+  ############ Disconnect WS Route ############
+
+  DisconnectFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      FunctionName: !Sub "${WebSocketApiName}-${StageName}-disconnect"
+      Description: Disconnect to websocket api
+      Handler: dist/functions/disconnect.handler
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ConnectionsTable
+
+  DisconnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebSocket
+      RouteKey: $disconnect
+      AuthorizationType: NONE
+      OperationName: disconnect
+      Target: !Join
+        - "/"
+        - - "integrations"
+          - !Ref DisconnectIntegration
+
+  DisconnectIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WebSocket
+      IntegrationType: AWS_PROXY
+      Description: Disconnect Integration
+      IntegrationUri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DisconnectFunction.Arn}/invocations
+
+  DisconnectFunctionPermission:
+    Type: AWS::Lambda::Permission
+    DependsOn:
+      - WebSocket
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref DisconnectFunction
+      Principal: apigateway.amazonaws.com
+
+  DisconnectFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${DisconnectFunction}"
+      RetentionInDays: 1
+
+  ############ Default WS Route ############
+
+  DefaultFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      FunctionName: !Sub "${WebSocketApiName}-${StageName}-default"
+      Description: Default websocket route
+      Handler: dist/functions/default.handler
+
+  DefaultRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebSocket
+      RouteKey: $default
+      AuthorizationType: NONE
+      OperationName: default
+      Target: !Join
+        - "/"
+        - - "integrations"
+          - !Ref DefaultIntegration
+
+  DefaultIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      Description: Default Integration
+      ApiId: !Ref WebSocket
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DefaultFunction.Arn}/invocations
+
+  DefaultFunctionPermission:
+    Type: AWS::Lambda::Permission
+    DependsOn:
+      - WebSocket
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref DefaultFunction
+      Principal: apigateway.amazonaws.com
+
+  SendEventFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      FunctionName: !Sub "${WebSocketApiName}-${StageName}-sendEvent"
+      Description: Send event to connected clients in websocket api
+      Handler: dist/functions/send-event.handler
+      Events:
+        SQSTrigger:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt EventDeliverySqs.Arn
+            BatchSize: 10
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
+      Policies:
+        - SQSPollerPolicy:
+            QueueName: !Ref EventDeliverySqs
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ConnectionsTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - execute-api:ManageConnections
+              Resource: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocket}/${StageName}/POST/@connections/*"
+
+  SendEventFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${SendEventFunction}"
+      RetentionInDays: 1
+
+
+Outputs:
+  WebSocketEndpoint:
+    Description: URL for making WebSocket connections to the application's API
+    Value: !Sub "wss://${WebSocket}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${StageName}/"
+  StageName:
+    Description: WebSocket API Stage Name
+    Value: !Ref StageName
